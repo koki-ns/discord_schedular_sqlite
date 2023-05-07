@@ -2,9 +2,10 @@ import discord
 from discord.ext import tasks
 import re
 import datetime
-import editcalendar
 import logging
 import json
+
+from calendarDB import calendarDB
 
 token_file = "discord_token.json"
 
@@ -17,12 +18,12 @@ fmt = "%(asctime)s %(levelname)s %(name)s :%(message)s"
 logging.basicConfig(filename='discord.log', level=logging.DEBUG, format=fmt)
 #handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
+db = calendarDB("calendar")
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
-
-ec = editcalendar.EditCalendar()
 
 @client.event
 async def on_ready():
@@ -83,18 +84,24 @@ async def addcalendar(interaction:discord.Interaction, day:str, summary: str, ye
             
         month_and_day = day.split("/")
         date_start = year + "-" + month_and_day[0] + "-" + month_and_day[1]
-        today_datetime = datetime.datetime.strptime(date_start, '%Y-%m-%d')
-        tomorrow_datetime = today_datetime + datetime.timedelta(days=1)
-        date_end = datetime.datetime.strftime(tomorrow_datetime, '%Y-%m-%d')
+        target_datetime = datetime.datetime.strptime(date_start, '%Y-%m-%d')
         
-        result = datetime.datetime.strftime(today_datetime, '%Y/%m/%d') + " 予定追加：\n"
-        result_log = datetime.datetime.strftime(today_datetime, '%Y/%m/%d') + "に予定を追加："
+        result = datetime.datetime.strftime(target_datetime, '%Y/%m/%d') + " 予定追加：\n"
+        result_log = datetime.datetime.strftime(target_datetime, '%Y/%m/%d') + "に予定を追加："
         
+        for sum in summaries:
+            result = result + "・" + sum + "\n"
+            result_log = result_log + " " + sum
+            
+        db.insert_event(target_datetime, summaries)
+        
+        """
         for sum in summaries:
             ec.insert_event(date_start, date_end, sum)
             #await ctx.send("start:{0}, end:{1}, summary:{2}".format(date_start, date_end, summary))
             result = result + "・" + sum + "\n"
             result_log = result_log + " " + sum
+        """
         
         await interaction.response.send_message(result)
         logging.info(result_log)
@@ -107,26 +114,58 @@ async def addcalendar(interaction:discord.Interaction, day:str, summary: str, ye
     
 async def fetch_event(date: datetime.datetime):
     text = datetime.datetime.strftime(date, "%Y/%m/%d") + "の予定:" + "\n"
-    event_list = ec.get_day_events(date)
+    event_list = db.get_posts(date)
     
     if event_list:
         for event in event_list:
-            text = text + "・" + event + "\n"
+            if event[3] == 0:
+                # statusが1(完了)ならチェックマークを表示したい 0は未完了
+                top = "・"
+            else:
+                top = "\N{White Heavy Check Mark}"
+            text = text + top + event[2] + "*（id:" + str(event[0]) + "）*"+ "\n"
     else:
         text = text + "登録された予定はありません"
     
     return text
 
 @tree.command(
-    name="today_events",
-    description="今日の予定を表示します"
+    name="show_events",
+    description="指定された日の予定を表示します。指定がなければ今日の予定を表示します。"
 )
 @discord.app_commands.guild_only()
-async def today_events(interaction: discord.Interaction):
-    today = datetime.datetime.today()
-    text = await fetch_event(today)
+async def show_events(interaction: discord.Interaction, day: str=None, year: str=None):
+    if day == None:
+        #引数がなければ今日の予定を表示
+        target_datetime = datetime.datetime.today()
+    elif re.fullmatch(r"([1-9]|0[1-9]|1[0-2])/([1-9]|[0-2][0-9]|3[0-1])", day) is None:
+        await interaction.response.send_message("日付の入力が不正です")
+        return
+    else:
+        #dateとsummaryの構築
+        if year is None:
+            year = str(datetime.date.today().year)
+            
+        month_and_day = day.split("/")
+        date_start = year + "-" + month_and_day[0] + "-" + month_and_day[1]
+        target_datetime = datetime.datetime.strptime(date_start, '%Y-%m-%d')
+    text = await fetch_event(target_datetime)
     await interaction.response.send_message(text)
     logging.info("today_events is called")
+    
+@tree.command(
+    name="set_status",
+    description="指定したidのイベントのステータスを変更します。0:未完了 1:完了"
+)
+@discord.app_commands.guild_only()
+async def set_status(interaction: discord.Interaction, id: int, status: int):
+    if status != 0 and status != 1:
+        await interaction.response.send_message("ステータスは0か1で指定してください")
+        return
+    if db.set_status(id, status) == 0:
+        await interaction.response.send_message("ステータスが更新されました")
+    else:
+        await interaction.response.send_message("ステータスの更新中にエラーが発生しました")
     
 @tasks.loop(seconds=60)
 async def morning_call():
