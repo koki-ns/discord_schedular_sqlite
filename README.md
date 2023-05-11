@@ -1,5 +1,5 @@
 # discord_schedular
-discordからsqliteに予定を追加するbot  
+discordからスラッシュコマンドでsqliteに予定を追加するbot  
 個人用  
 タスクの状態（完了/未完了）を設定できるようにした
   
